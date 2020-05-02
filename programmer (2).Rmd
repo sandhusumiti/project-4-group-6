@@ -1,0 +1,125 @@
+---
+title: "programmer - proj.4"
+author: "Simran Makwana"
+date: "4/15/2020"
+output: word_document
+---
+
+```{r echo = FALSE, message = FALSE}
+#install.packages("Seurat")
+library(Seurat)
+#BiocManager::install("tximport")
+library(tximport) # must be version >= 1.12.2
+
+# path to *our output directory*
+files <- file.path("../umi_count_files/GSM2230758/GSM2230758_alevin_4/alevin/quants_mat.gz")
+
+# check
+file.exists(files)
+
+# Reading in the alevin quants quants
+txi <- tximport(files, type="alevin")
+
+```
+
+Filter out low-quality cells and genes. You should consider the minimum number of non-zero count genes per cell, the number of non-zero count cells per gene, etc. NB: The UMI counts matrix has Ensembl gene identifiers, but it may be helpful to map them to gene symbols. There are many ways to do this.
+```{r echo = FALSE, message = FALSE}
+# map ensembl gene identifiers to gene symbols
+#BiocManager::install("SeqGSEA")
+library(SeqGSEA)
+
+# no filtering
+panc <- CreateSeuratObject(counts = txi$counts, project = "panc") 
+#panc <- CreateSeuratObject(counts = txi_new$counts, project = "panc") 
+
+print("no filtering")
+panc
+
+# filter out genes that are detected in less than 3 cells, and cells that are detected in less than 200 features
+panc <- CreateSeuratObject(counts = txi$counts, project = "panc", min.cells = 3, min.features = 20)
+print("filters: min.cells = 3, min.features = 20")
+panc
+
+# low mito
+genes <- substr(panc@assays$RNA@counts@Dimnames[[1]], start = 1, stop = 15)
+conversion <- convertEnsembl2Symbol(genes)
+genes <- conversion$hgnc_symbol
+
+panc@assays$RNA@counts@Dimnames[[1]] <- genes
+panc@assays$RNA@data@Dimnames[[1]] <- genes
+
+panc[["percent.mt"]] <- PercentageFeatureSet(panc, pattern = "^MT-")
+VlnPlot(panc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+plot1 <- FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(panc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+#duplicts...
+# filter out cells with too few (low quality or empty droplets) or too many (doublets or multiplets) genes
+panc <- subset(panc, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+# report
+print("filters: nFeature_RNA>200 and nFeature_RNA < 2500")
+panc
+
+```
+
+Filter out low variance genes. Further filter the counts matrix to include only highly variable features that are likely to be informative. Choose an appropriate number of features based on the data. Recall that the counts matrix must be normalized before comparing cells to one another.
+```{r echo = FALSE, message = FALSE}
+# normalize counts matrix
+panc <- NormalizeData(panc)
+
+panc[["RNA"]]@meta.features <- data.frame(row.names = rownames(panc[["RNA"]]))
+
+# filter out low variance genes; only include highly variable features (top 2000)
+panc <- FindVariableFeatures(panc, selection.method = "vst", nfeatures = 2000)
+
+# scale genes 
+panc <- ScaleData(panc)
+
+# report
+print("normalized, filtered out low variable genes, scaled")
+panc
+
+# change var.features to gene names for analyst
+#genes <- panc@assays$RNA@counts@Dimnames[[1]]
+#varnames <- panc@assays$RNA@var.features
+
+# save object
+save(panc, file = "../output/processed_panc.rda")
+
+# genes the analyst needs
+needed_genes <- c("GCG", "INS", "SST", "PPY", "GHRL", "KRT19", "CPA1", "PDGFRB", "VWF", "PECAM1", "CD34", "CD163", "CD68", "IgG", "CD3", "CD8", "TPSAB1", "KIT", "CPA3")
+
+
+#mygenes <- substr(panc@assays$RNA@counts@Dimnames[[1]], start = 1, stop = 15)
+#conversion <- convertEnsembl2Symbol(mygenes)
+#mygenes <- conversion$hgnc_symbol
+
+#panc@assays$RNA@counts@Dimnames[[1]] <- mygenes
+
+print("the following genes are not in the filtered list:")
+needed_genes[which(!needed_genes %in% panc@assays$RNA@counts@Dimnames[[1]])]
+```
+
+Identify clusters of cell type subpopulations. Use a clustering method of your choosing to discover clusters of cells. Identify the number of cells in each cluster.
+```{r echo = FALSE, message = FALSE}
+# dimension reduction (PCA)
+
+panc <- RunPCA(panc, features = VariableFeatures(object = panc))
+
+# find clusters
+ElbowPlot(panc)
+
+panc <- FindNeighbors(panc, dims = 1:5i)
+panc <- FindClusters(panc, resolution = 1.7)
+cluster_assignments <- Idents(panc)
+plot(cluster_assignments)
+
+save(panc, file = "../output/processed_panc_with_clusters.rda")
+
+
+```
+
+
+
